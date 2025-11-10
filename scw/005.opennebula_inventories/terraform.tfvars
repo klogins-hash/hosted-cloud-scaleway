@@ -1,0 +1,10 @@
+tfstate                     = "opennebula-opennebula-scw-string-tfstates"
+region                      = "fr-par"
+zone                        = "fr-par-2"
+project_fullname            = "opennebula-opennebula-scw-string"
+private_subnet              = "10.16.0.0/20"
+worker_count                = 1
+one_password                = "your_opennebula_password"
+scw_secret_key              = "a8236888-6261-4b2b-b717-6cd339e907bf"
+flexible_ip_dns             = []
+flexible_ip_permission_sets = ["ElasticMetalFullAccess", "IPAMFullAccess"]

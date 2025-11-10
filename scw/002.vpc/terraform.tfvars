@@ -1,0 +1,5 @@
+tfstate                = "opennebula-opennebula-scw-string-tfstates"
+region                 = "fr-par"
+project_fullname       = "opennebula-opennebula-scw-string"
+private_subnet         = "10.16.0.0/20"
+vmtovm_subnet          = "10.17.0.0/20"
