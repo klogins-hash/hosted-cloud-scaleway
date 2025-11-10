@@ -1,5 +1,5 @@
 data "scaleway_baremetal_os" "ubuntu_noble" {
-  zone    = var.zone 
+  zone    = var.zone
   name    = "Ubuntu"
   version = "24.04 LTS (Noble Numbat)"
 }
@@ -14,10 +14,6 @@ data "scaleway_baremetal_os" "debian_bookworm" {
 resource "scaleway_iam_ssh_key" "temp_ssh_key" {
   name       = "tf generated ssh_key"
   public_key = chomp(tls_private_key.ssh.public_key_openssh)
-}
-
-data "scaleway_vpc" "vpc" {
-  name = "vpc-opennebula-scw-infra"
 }
 
 data "scaleway_vpc_private_network" "private_network" {

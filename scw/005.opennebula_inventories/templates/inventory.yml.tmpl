@@ -41,12 +41,13 @@ all:
           FILTER_IP_SPOOFING: 'NO'
           FILTER_MAC_SPOOFING: 'NO'
 
-      vxlan: 
+      vxlan:
         managed: true
         template:
           VN_MAD: vxlan
           PHYDEV: vmtovm
           BRIDGE: vmtovm0
+          AUTOMATIC_VLAN_ID: 'YES'
           FILTER_IP_SPOOFING: 'NO'
           FILTER_MAC_SPOOFING: 'NO'
           GUEST_MTU: 1450
