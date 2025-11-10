@@ -1,0 +1,261 @@
+---
+# Deploy Domain-Based Services
+# Sets up Nginx reverse proxy and Let's Encrypt SSL certificates
+# for collectivnexus.com domain
+#
+# Run with:
+# ansible-playbook playbooks/deploy-domain-services.yml -i inventory/hosts
+#
+# Prerequisites:
+# - DNS records created (A records pointing to 51.159.107.100)
+# - SSH access to frontend node
+# - firewall rules allowing ports 80, 443
+
+- name: Deploy Domain Services (Nginx + SSL/TLS)
+  hosts: fe
+  become: true
+  vars:
+    domain: "collectivnexus.com"
+    email: "admin@collectivnexus.com"
+    # Services to configure
+    services:
+      - name: "fireedge"
+        local_port: "8080"
+        backend_protocol: "https"
+      - name: "onegate"
+        local_port: "5030"
+        backend_protocol: "https"
+      - name: "oneflow"
+        local_port: "2434"
+        backend_protocol: "https"
+      - name: "prometheus"
+        local_port: "9090"
+        backend_protocol: "http"
+      - name: "grafana"
+        local_port: "3000"
+        backend_protocol: "http"
+
+  pre_tasks:
+    - name: Check if DNS is propagated
+      shell: |
+        nslookup {{ services[0].name }}.{{ domain }} 2>/dev/null | grep "Address:" | head -1
+      register: dns_check
+      failed_when: dns_check.rc != 0
+      retries: 5
+      delay: 10
+      ignore_errors: true
+
+    - name: Warning if DNS not yet propagated
+      debug:
+        msg: |
+          WARNING: DNS records may not yet be propagated.
+          Certificate generation will fail if DNS is not accessible.
+          Expected propagation time: 24-48 hours.
+          You can proceed now and rerun this playbook after DNS propagates.
+
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Install Nginx
+      apt:
+        name:
+          - nginx
+          - nginx-full
+        state: present
+      register: nginx_install
+      until: nginx_install is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Install Certbot and plugins
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+          - python3-certbot-dns-scaleway
+        state: present
+      register: certbot_install
+      until: certbot_install is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Create Nginx sites directory
+      file:
+        path: /etc/nginx/sites-available
+        state: directory
+        mode: "0755"
+
+    - name: Disable default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    - name: Create Nginx upstream blocks for each service
+      template:
+        src: nginx-upstream.j2
+        dest: /etc/nginx/conf.d/upstream-{{ item.name }}.conf
+        mode: "0644"
+      loop: "{{ services }}"
+      notify: restart nginx
+      vars:
+        service_name: "{{ item.name }}"
+        service_port: "{{ item.local_port }}"
+
+    - name: Create Nginx server blocks (HTTP redirect + HTTPS)
+      template:
+        src: nginx-serverblock.j2
+        dest: /etc/nginx/sites-available/{{ item.name }}.{{ domain }}
+        mode: "0644"
+      loop: "{{ services }}"
+      notify: restart nginx
+      vars:
+        subdomain: "{{ item.name }}"
+        local_port: "{{ item.local_port }}"
+        backend_protocol: "{{ item.backend_protocol }}"
+
+    - name: Enable Nginx server blocks
+      file:
+        src: /etc/nginx/sites-available/{{ item.name }}.{{ domain }}
+        dest: /etc/nginx/sites-enabled/{{ item.name }}.{{ domain }}
+        state: link
+      loop: "{{ services }}"
+      notify: restart nginx
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      changed_when: false
+
+    - name: Start and enable Nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Generate SSL certificates with Certbot
+      shell: |
+        certbot certonly --nginx \
+          -d {{ item.name }}.{{ domain }} \
+          --agree-tos \
+          --email {{ email }} \
+          --non-interactive \
+          --keep-until-expiring
+      loop: "{{ services }}"
+      register: certbot_result
+      changed_when: "'Congratulations' in certbot_result.stdout or 'Certificate not yet due' in certbot_result.stdout"
+      failed_when: certbot_result.rc != 0 and 'Certificate not yet due' not in certbot_result.stdout
+
+    - name: Enable Certbot auto-renewal timer
+      systemd:
+        name: certbot.timer
+        state: started
+        enabled: yes
+
+    - name: Create Nginx SSL configuration for each service
+      template:
+        src: nginx-ssl-serverblock.j2
+        dest: /etc/nginx/sites-available/{{ item.name }}-ssl.{{ domain }}
+        mode: "0644"
+      loop: "{{ services }}"
+      notify: restart nginx
+      vars:
+        subdomain: "{{ item.name }}"
+        local_port: "{{ item.local_port }}"
+        backend_protocol: "{{ item.backend_protocol }}"
+
+    - name: Enable SSL server blocks
+      file:
+        src: /etc/nginx/sites-available/{{ item.name }}-ssl.{{ domain }}
+        dest: /etc/nginx/sites-enabled/{{ item.name }}-ssl.{{ domain }}
+        state: link
+      loop: "{{ services }}"
+      notify: restart nginx
+
+    - name: Test updated Nginx configuration
+      command: nginx -t
+      changed_when: false
+
+    - name: Create health check script
+      copy:
+        content: |
+          #!/bin/bash
+          # DNS and service health check script
+          echo "=== DNS Health Check ==="
+          for domain in opennebula fireedge onegate oneflow prometheus grafana fe host01; do
+            echo -n "Checking $domain.collectivnexus.com: "
+            result=$(nslookup $domain.collectivnexus.com 2>/dev/null | grep -i address | head -1)
+            if [ -z "$result" ]; then
+              echo "NOT YET PROPAGATED"
+            else
+              echo "$result"
+            fi
+          done
+
+          echo ""
+          echo "=== Certificate Health Check ==="
+          certbot certificates
+
+          echo ""
+          echo "=== Service Health Check ==="
+          for service in fireedge onegate oneflow prometheus grafana; do
+            echo -n "Checking $service.collectivnexus.com: "
+            if curl -s -k https://$service.collectivnexus.com 2>/dev/null | head -1 | grep -q "HTTP"; then
+              echo "OK (HTTPS)"
+            else
+              echo "FAILED"
+            fi
+          done
+
+          echo ""
+          echo "=== Nginx Status ==="
+          systemctl status nginx --no-pager
+        dest: /usr/local/bin/health-check-domains.sh
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Display access information
+      debug:
+        msg: |
+          =============================================================
+          Domain Services Deployment Complete!
+          =============================================================
+
+          Access the services via domain names:
+          - FireEdge:   https://fireedge.{{ domain }}
+          - OneGate:    https://onegate.{{ domain }}
+          - OneFlow:    https://oneflow.{{ domain }}
+          - Prometheus: https://prometheus.{{ domain }}
+          - Grafana:    https://grafana.{{ domain }}
+
+          Certificate Status:
+          Run: sudo certbot certificates
+
+          Health Check:
+          Run: sudo /usr/local/bin/health-check-domains.sh
+
+          Logs:
+          - Nginx:   sudo tail -f /var/log/nginx/error.log
+          - Certbot: sudo tail -f /var/log/letsencrypt/letsencrypt.log
+
+          Important Notes:
+          - If DNS is not yet propagated, certificate generation will fail
+          - Wait 24-48 hours for DNS propagation and rerun this playbook
+          - Certificates auto-renew 30 days before expiration
+          - Monitor with: sudo systemctl status certbot.timer
+
+          =============================================================
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+        daemon_reload: yes

@@ -1,0 +1,5 @@
+# Upstream definition for {{ service_name }}
+upstream {{ service_name }}_backend {
+    server localhost:{{ service_port }};
+    keepalive 32;
+}
