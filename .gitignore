@@ -7,3 +7,4 @@
 *.tfstate.backup
 .python-version
 scw/00*.opennebula_inventories/generated/*
+docs/ACCESS_GUIDE.md
